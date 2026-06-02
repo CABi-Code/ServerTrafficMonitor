@@ -116,7 +116,8 @@ modprobe nf_conntrack
 echo nf_conntrack > /etc/modules-load.d/conntrack.conf
 echo 'net.netfilter.nf_conntrack_acct=1' > /etc/sysctl.d/99-conntrack-acct.conf
 sysctl --system
-chmod +x /usr/local/bin/portstat        # после того как положили файл
+curl -fsSL https://raw.githubusercontent.com/CABi-Code/ServerTrafficMonitor/main/portstat -o /usr/local/bin/portstat
+chmod +x /usr/local/bin/portstat
 echo "alias portstat='watch -n 2 /usr/local/bin/portstat'" >> ~/.bashrc && source ~/.bashrc
 portstat
 ```
