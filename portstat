@@ -1,14 +1,13 @@
 sudo tee /usr/local/bin/portstat >/dev/null << 'EOF'
 #!/usr/bin/env bash
-# portstat — подключения, уникальные IP, трафик и скорость по портам (TCP+UDP) через conntrack
+# portstat — подключения, уникальные IP, трафик, скорость и история по портам (TCP+UDP)
 STATE=/tmp/portstat.state
+HIST=/tmp/portstat.history
+HISTMAX=60   # сколько замеров хранить для истории
 
-# Только публичные IP сервера (без loopback/docker/приватных)
 SRV=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 \
       | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.)')
 SRVRE=$(printf '%s\n' "$SRV" | paste -sd '|')
-
-# Слушающие порты, исключая привязанные только к localhost
 LPORTS=$(ss -lntuH | awk '{print $5}' | grep -vE '^(127\.|\[::1\])' | sed 's/.*://' | sort -un | paste -sd '|')
 
 FLOWS=$(conntrack -L 2>/dev/null | awk -v lp="^($LPORTS)$" -v srv="^($SRVRE)$" '
@@ -28,7 +27,6 @@ FLOWS=$(conntrack -L 2>/dev/null | awk -v lp="^($LPORTS)$" -v srv="^($SRVRE)$" '
 
 now=$(date +%s.%N)
 
-# Агрегация по портам + скорость (дельта байт по совпадающим потокам / время)
 PORTAGG=$(printf '%s\n' "$FLOWS" | awk -v statefile="$STATE" -v now="$now" '
   BEGIN{
     prevt=0
@@ -42,40 +40,84 @@ PORTAGG=$(printf '%s\n' "$FLOWS" | awk -v statefile="$STATE" -v now="$now" '
     if(!((k SUBSEP ip) in seen)){ seen[k SUBSEP ip]=1; uq[k]++ }
     if(dt>0 && (fk in prevb)){ d=b-prevb[fk]; if(d>0) sp[k]+=d }
   }
-  END{ for(k in conns){ split(k,a,SUBSEP); spd=(dt>0)?sp[k]/dt:0; print a[1], a[2], conns[k], uq[k], by[k], spd } }
+  END{ for(k in conns){ split(k,a,SUBSEP); spd=(dt>0)?sp[k]/dt:0; printf "%s %s %d %d %d %.3f\n", a[1], a[2], conns[k], uq[k], by[k], spd } }
 ')
 
-# Сохраняем состояние для следующего замера
 { echo "$now"; printf '%s\n' "$FLOWS" | awk 'NF{print $5, $4}'; } > "$STATE"
 
 INU=$(printf '%s\n' "$FLOWS" | awk '$1=="IN"{print $2}'  | sort -u | grep -c .)
 OUU=$(printf '%s\n' "$FLOWS" | awk '$1=="OUT"{print $2}' | sort -u | grep -c .)
 
+TOTC=$(printf '%s\n' "$PORTAGG" | awk '{c+=$3} END{print c+0}')
+echo "$TOTC $((INU+OUU))" >> "$HIST"
+tail -n "$HISTMAX" "$HIST" > "$HIST.tmp" 2>/dev/null && mv "$HIST.tmp" "$HIST"
+
+SEP="----------------------------------------------------------------------------"
+
 render() {
   local dir=$1 uniptot=$2
-  printf '%s\n' "$PORTAGG" | awk -v d="$dir" '$1==d' | sort -k3,3 -nr | awk -v uniptot="$uniptot" '
+  printf '%s\n' "$PORTAGG" | awk -v d="$dir" '$1==d' | sort -k6,6 -nr | awk -v uniptot="$uniptot" -v sep="$SEP" '
     function ht(b,  i,u){split("B K M G T",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s",b,u[i])}
-    function hs(b,  i,u){split("B KiB MiB GiB TiB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s/s",b,u[i])}
-    BEGIN{ printf "%-7s %-12s %-9s %-12s\n","PORT","CONN / IP","TRAFFIC","SPEED"; print "------------------------------------------" }
-    { tc+=$3; tb+=$5; ts+=$6; printf "%-7s %-12s %-9s %-12s\n", $2, $3" / "$4, ht($5), hs($6) }
-    END{ print "------------------------------------------"; printf "%s%-12s %-9s %-12s\n","ИТОГО   ", tc" / "uniptot, ht(tb), hs(ts) }
+    function hs(b,  i,u){split("B KiB MiB GiB TiB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f %s/s",b,u[i])}
+    BEGIN{ BAR=31; printf "%-7s %-12s %-9s %-12s %s\n","PORT","CONN / IP","TRAFFIC","SPEED",""; print sep }
+    { port[++n]=$2; ci[n]=$3" / "$4; tr[n]=$5+0; sp[n]=$6+0; if(sp[n]>mx)mx=sp[n]; tc+=$3; tb+=$5; ts+=$6 }
+    END{
+      for(i=1;i<=n;i++){
+        len=(mx>0)?int(sp[i]/mx*BAR+0.5):0
+        if(sp[i]>0 && len<1) len=1
+        bar=""; for(j=0;j<len;j++) bar=bar "█"
+        printf "%-7s %-12s %-9s %-12s %s\n", port[i], ci[i], ht(tr[i]), hs(sp[i]), bar
+      }
+      print sep
+      printf "%s%-12s %-9s %-12s\n","ИТОГО   ", tc" / "uniptot, ht(tb), hs(ts)
+    }
   '
 }
+
+spark() {
+  local col=$1 label=$2
+  awk -v col="$col" -v label="$label" '
+    {v[NR]=$col+0; if(NR==1){mn=mx=$col+0} if($col+0>mx)mx=$col+0; if($col+0<mn)mn=$col+0}
+    END{
+      lv[0]=" ";lv[1]="░";lv[2]="▒";lv[3]="▓";lv[4]="█"
+      s=""
+      for(i=1;i<=NR;i++){ 
+        if(mx==mn) k=0; 
+        else k=int((v[i]-mn)/(mx-mn)*4+0.5); 
+        
+        if(v[i] == mn) {
+          s=s " "
+        } else {
+          s=s lv[k]
+        }
+      }
+      printf "%s |%s|\n", label, s
+      printf "              | (мин %d / макс %d)\n", mn, mx
+    }
+  ' "$HIST"
+}
+
 
 echo "=== IP СЕРВЕРА ==="
 printf '%s\n' "$SRV"
 echo
-echo "=== ВХОДЯЩИЕ ==="
-render IN "$INU"
-echo
 echo "=== ИСХОДЯЩИЕ ==="
 render OUT "$OUU"
 echo
+echo "=== ВХОДЯЩИЕ ==="
+render IN "$INU"
+echo
 printf '%s\n' "$PORTAGG" | awk -v uip=$((INU+OUU)) '
   function ht(b,  i,u){split("B K M G T",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s",b,u[i])}
-  function hs(b,  i,u){split("B KiB MiB GiB TiB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s/s",b,u[i])}
+  function hs(b,  i,u){split("B KiB MiB GiB TiB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f %s/s",b,u[i])}
   {tb+=$5; ts+=$6}
   END{ print "=== ВСЕГО ==="; printf "Уникальных IP: %s\n", uip; printf "Трафик:        %s\n", ht(tb); printf "Скорость:      %s\n", hs(ts) }
 '
+echo
+echo "=== ИСТОРИЯ (последние $HISTMAX замеров) ==="
+echo
+spark 1 "Соединения   "
+echo
+spark 2 "Уник. IP     "
 EOF
 sudo chmod +x /usr/local/bin/portstat
