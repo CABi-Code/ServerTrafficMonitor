@@ -77,7 +77,6 @@ sysctl net.netfilter.nf_conntrack_acct
 sudo curl -fsSL https://raw.githubusercontent.com/CABi-Code/ServerTrafficMonitor/main/portstat -o /usr/local/bin/portstat
 sudo chmod +x /usr/local/bin/portstat
 ```
-(замените `<USER>/<REPO>` на свой; либо просто скопируйте файл `portstat` в `/usr/local/bin/`)
 
 ### 4. Добавить алиас
 
