@@ -110,7 +110,7 @@ sudo /usr/local/bin/portstat
 
 ---
 
-## Команды одним блоком (Debian/Ubuntu, под root)
+## Команды одним блоком УСТАНОВКА (Debian/Ubuntu, под root)
 
 ```bash
 apt update && apt install -y conntrack iproute2 procps
@@ -121,6 +121,15 @@ sysctl --system
 curl -fsSL https://raw.githubusercontent.com/CABi-Code/ServerTrafficMonitor/main/portstat -o /usr/local/bin/portstat
 chmod +x /usr/local/bin/portstat
 echo "alias portstat='watch -n 2 /usr/local/bin/portstat'" >> ~/.bashrc && source ~/.bashrc
+portstat
+```
+
+## Команды для ОБНОВЛЕНИЯ (если уже установили)
+
+```bash
+sudo curl -fsSL https://raw.githubusercontent.com/CABi-Code/ServerTrafficMonitor/main/portstat -o /usr/local/bin/portstat
+sudo chmod +x /usr/local/bin/portstat
+sudo rm -f /tmp/portstat.state    # формат стейта изменился, иначе первый тик даст мусорную скорость
 portstat
 ```
 
