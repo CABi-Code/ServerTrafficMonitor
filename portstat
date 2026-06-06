@@ -200,10 +200,10 @@ spark() {
 echo "=== IP СЕРВЕРА ==="
 printf '%s\n' "$SRV"
 echo
-echo "=== ВХОДЯЩИЕ (клиенты -> сервис) ==="
+echo "=== ВХОДЯЩИЕ ==="
 render IN "$IN_IP" "$RES_IN"
 echo
-echo "=== ИСХОДЯЩИЕ (сервер -> наружу) ==="
+echo "=== ИСХОДЯЩИЕ ==="
 render OUT "$OUT_IP" "$RES_OUT"
 echo
 echo "=== ИСТОРИЯ (последние $HISTMAX замеров) ==="
