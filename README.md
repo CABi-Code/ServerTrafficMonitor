@@ -11,8 +11,7 @@
 (`STATUS`: `ESTAB`, `TIME-WAIT`, `FIN-WAIT-2` и т.д.), а скорость показывается
 раздельно вверх/вниз (`↑ / ↓`).
 
-<img width="577" height="664" alt="image" src="https://github.com/user-attachments/assets/971d27e7-7b82-4d0e-8515-1e0a64233789" />
-
+<img width="997" height="1091" alt="image" src="https://github.com/user-attachments/assets/4cb670c0-422f-43a4-8fa1-68c8fa3308eb" />
 
 ---
 
