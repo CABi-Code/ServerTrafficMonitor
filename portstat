@@ -4,19 +4,18 @@
 # Источники: conntrack (байты TCP+UDP) + ss (точное состояние и имя процесса).
 STATE=/tmp/portstat.state
 HIST=/tmp/portstat.history
+ROWSF=/tmp/portstat.rows     # зарезервированная высота таблиц (фиксируется при первом запуске)
 HISTMAX=60
+PAD=8                        # сколько пустых строк добавить сверх стартового числа строк
 
 # --- публичные IP сервера ---
 SRV=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 \
       | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.)')
-SRVRE=$(printf '%s\n' "$SRV" | sed 's/\./\\./g' | paste -sd '|')
+SRVLIST=$(printf '%s\n' "$SRV" | paste -sd ' ')
 
 # --- слушающие порты ---
 LPORTS=$(ss -lntuH 2>/dev/null | awk '{print $5}' | grep -vE '^(127\.|\[::1\])' \
          | sed 's/.*://' | sort -un | paste -sd '|')
-
-# приватные / служебные адреса контрагента, которые НЕ считаем «клиентом»
-PRIV='^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.|0\.0\.0\.0$)'
 
 # --- оверлей из ss: состояние + имя процесса на соединение, имя на локальный сокет ---
 SSF=$(mktemp)
@@ -43,7 +42,7 @@ now=$(date +%s.%N)
 # --- conntrack: один поток = одна запись ---
 # поля: dir port name state clientip up_bytes down_bytes flowkey
 FLOWS=$(conntrack -L 2>/dev/null | awk \
-  -v lp="^($LPORTS)$" -v srv="^($SRVRE)$" -v priv="$PRIV" -v ssf="$SSF" '
+  -v lp="^($LPORTS)$" -v srvlist="$SRVLIST" -v ssf="$SSF" '
   function canon(a,b){ return (a<b) ? a "|" b : b "|" a }
   function mapstate(s){
     if(s=="ESTABLISHED") return "ESTAB"
@@ -57,6 +56,7 @@ FLOWS=$(conntrack -L 2>/dev/null | awk \
     return s
   }
   BEGIN{
+    ns=split(srvlist,sa," "); for(i=1;i<=ns;i++) srv[sa[i]]=1
     while((getline line < ssf) > 0){
       n=split(line,f,"\t")
       if(f[1]=="C"){ ck[f[2]]=1; cstate[f[2]]=f[3]; cname[f[2]]=f[4] }
@@ -76,11 +76,13 @@ FLOWS=$(conntrack -L 2>/dev/null | awk \
     }
     if(src=="" || dst=="") next
 
-    if(dport ~ lp && dst ~ srv){ dir="IN";  client=src; port=dport; lep=dst":"dport }
-    else if(src ~ srv)        { dir="OUT"; client=dst; port=dport; lep=src":"sport }
+    if(dport ~ lp && (dst in srv)){ dir="IN";  client=src; port=dport; lep=dst":"dport }
+    else if(src in srv)          { dir="OUT"; client=dst; port=dport; lep=src":"sport }
     else next
 
-    if(client ~ priv || client ~ srv) next
+    # контрагент должен быть публичным внешним адресом
+    if(client in srv) next
+    if(client ~ /^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.|0\.0\.0\.0$)/) next
 
     e1=src":"sport; e2=dst":"dport
     key=canon(e1,e2)
@@ -132,14 +134,31 @@ TOTIP=$(printf '%s\n' "$FLOWS" | awk 'NF>=8{print $1"\t"$5}' | sort -u | grep -c
 echo "$TOTC $TOTIP" >> "$HIST"
 tail -n "$HISTMAX" "$HIST" > "$HIST.tmp" 2>/dev/null && mv "$HIST.tmp" "$HIST"
 
+# --- итоги по секциям и зарезервированная высота таблиц ---
+IN_IP=$(printf  '%s\n' "$FLOWS" | awk 'NF>=8 && $1=="IN"{print $5}'  | sort -u | grep -c .)
+OUT_IP=$(printf '%s\n' "$FLOWS" | awk 'NF>=8 && $1=="OUT"{print $5}' | sort -u | grep -c .)
+IN_ROWS=$(printf  '%s\n' "$AGG" | awk -F'\t' '$1=="IN"{c++}  END{print c+0}')
+OUT_ROWS=$(printf '%s\n' "$AGG" | awk -F'\t' '$1=="OUT"{c++} END{print c+0}')
+
+RES_IN=""; RES_OUT=""
+if [ -f "$ROWSF" ]; then
+  RES_IN=$(awk '$1=="IN"{print $2}'  "$ROWSF")
+  RES_OUT=$(awk '$1=="OUT"{print $2}' "$ROWSF")
+fi
+[ -z "$RES_IN" ]  && RES_IN=$((IN_ROWS  + PAD))
+[ -z "$RES_OUT" ] && RES_OUT=$((OUT_ROWS + PAD))
+printf 'IN %s\nOUT %s\n' "$RES_IN" "$RES_OUT" > "$ROWSF"
+
 SEP="--------------------------------------------------------------------------------------------"
 
 render() {
-  local dir=$1
+  local dir=$1 totip=$2 reserved=$3
   printf '%s\n' "$AGG" | awk -F'\t' -v d="$dir" '$1==d' \
-    | sort -t$'\t' -k9,9 -nr | awk -F'\t' -v sep="$SEP" '
+    | sort -t$'\t' -k6,6nr -k2,2n -k3,3 -k4,4 \
+    | awk -F'\t' -v sep="$SEP" -v totip="$totip" -v reserved="$reserved" '
     function ht(b,  i,u){split("B K M G T",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s",b,u[i])}
     function hs(b,  i,u){split("B KiB MiB GiB TiB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f %s/s",b,u[i])}
+    function spaces(k,  s){s="";while(k-->0)s=s" ";return s}
     BEGIN{ BAR=24; printf "%-7s %-14s %-12s %-12s %-9s %s\n","PORT","NAME","STATUS","CONN / IP","TRAFFIC","SPEED (вверх↑ / вниз↓)"; print sep }
     {
       port[++n]=$2; nm[n]=$3; stt[n]=$4; ci[n]=$5" / "$6;
@@ -147,7 +166,6 @@ render() {
       sp[n]=tot; if(tot>mx)mx=tot; tc+=$5; tb+=tr[n]; tus+=us[n]; tds+=ds[n]
     }
     END{
-      if(n==0){ print "  (нет активных соединений)"; print sep; exit }
       for(i=1;i<=n;i++){
         len=(mx>0)?int(sp[i]/mx*BAR+0.5):0
         if(sp[i]>0 && len<1) len=1
@@ -155,8 +173,10 @@ render() {
         spd=sprintf("↑%s  ↓%s", hs(us[i]), hs(ds[i]))
         printf "%-7s %-14s %-12s %-12s %-9s %-26s %s\n", port[i], nm[i], stt[i], ci[i], ht(tr[i]), spd, bar
       }
+      for(i=n+1;i<=reserved;i++)
+        print "—" spaces(6) " " "—" spaces(13) " " "—" spaces(11) " " "—" spaces(11) " " "—" spaces(8) " " "—"
       print sep
-      printf "%-7s %-14s %-12s %-12s %-9s ↑%s  ↓%s\n","ИТОГО","","","("tc" conn)", ht(tb), hs(tus), hs(tds)
+      printf "%-7s %-14s %-12s %-12s %-9s ↑%s  ↓%s\n","ИТОГО","","",tc" / "totip, ht(tb), hs(tus), hs(tds)
     }
   '
 }
@@ -181,10 +201,10 @@ echo "=== IP СЕРВЕРА ==="
 printf '%s\n' "$SRV"
 echo
 echo "=== ВХОДЯЩИЕ (клиенты -> сервис) ==="
-render IN
+render IN "$IN_IP" "$RES_IN"
 echo
 echo "=== ИСХОДЯЩИЕ (сервер -> наружу) ==="
-render OUT
+render OUT "$OUT_IP" "$RES_OUT"
 echo
 echo "=== ИСТОРИЯ (последние $HISTMAX замеров) ==="
 echo
