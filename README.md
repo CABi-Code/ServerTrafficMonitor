@@ -129,7 +129,7 @@ portstat
 ```bash
 sudo curl -fsSL https://raw.githubusercontent.com/CABi-Code/ServerTrafficMonitor/main/portstat -o /usr/local/bin/portstat
 sudo chmod +x /usr/local/bin/portstat
-sudo rm -f /tmp/portstat.state    # формат стейта изменился, иначе первый тик даст мусорную скорость
+sudo rm -f /tmp/portstat.state
 portstat
 ```
 
